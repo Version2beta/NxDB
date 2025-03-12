@@ -132,6 +132,7 @@ nxdb/
 - **Multi-Dimensional Tensor Indexing** → Implement KD-Trees, R-Trees, and/or tensor hashing.
 - **Streaming Data Ingestion** → Efficient handling of real-time tensor updates.
 - **Quantization Support** → Reduce memory usage for massive datasets.
+- **Authentication & Authorization** → Establish and implement security requirements.
 - **Multi-Node Scaling** → Transition to a clustered NxDB architecture when required.
 - **Cloud Deployment Support** → Optimize for distributed and serverless environments.
 
