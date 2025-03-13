@@ -53,7 +53,7 @@
 
 ### **1️⃣ Storing and Retrieving Tensors**
 
-#### `put/3`
+#### `put/1`
 
 ```elixir
 @doc """
@@ -64,7 +64,21 @@ Stores a tensor.
 - Returns tensor_id.
 - Note that 1D compressed vector representations of ND tensors must be stored separately.
 """
-def put(tensor_id, tensor, metadata), do: ...
+def put({tensor_id, tensor, metadata}), do: ...
+```
+
+#### `put_all/1`
+
+```elixir
+@doc """
+Stores multiple tensors.
+- Saves the tensors in the 1D cluster or as a binary file, depending on the shape.
+- Updates metadata including shape and, if provided, a raw ND tensor ID.
+- Adds tensor (for 1D tensors only) to the IVF cluster and updates HNSW graph.
+- Returns an ordered list of tensor_ids.
+- Note that 1D compressed vector representations of ND tensors must be stored separately.
+"""
+def put_all([{tensor_id, tensor, metadata}, ...]), do: ...
 ```
 
 #### `get/1`
@@ -77,11 +91,21 @@ Loads a tensor from storage.
 def get(tensor_id), do: ...
 ```
 
+#### `get_all/1`
+
+```elixir
+@doc """
+Loads tensors from storage.
+- Uses metadata to retrieve the raw tensor ID, if provided.
+"""
+def get_all([{tensor_id}, ...]), do: ...
+```
+
 #### `query/1`
 
 ```elixir
 @doc """
-Retrieves 1D tensors based on metadata filters (e.g., shape, type).
+Retrieves 1D and ND tensors based on metadata filters (e.g., shape, type).
 - Note that ND tensors linked in metadata must be loaded in a separate request by ID.
 """
 def query(filters), do: ...
@@ -91,7 +115,7 @@ def query(filters), do: ...
 
 ```elixir
 @doc """
-Finds similar tensors using ANN + metadata search.
+Finds similar 1D tensors using ANN + metadata search.
 - Searches IVF + HNSW index.
 - Returns **only 1D tensors**. Linked ND tensors must be retrieved separately.
 - Similarity and distance for ND tensors are roadmap items.
