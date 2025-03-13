@@ -159,7 +159,7 @@ Writes clusters and graphs back to disk (if dirty) and removes protection from e
 def sync_unlock([cluster_id, ...]), do: ...
 ```
 
-#### `fetch_cluster/1`
+#### `load_cluster/1`
 
 ```elixir
 @doc """
