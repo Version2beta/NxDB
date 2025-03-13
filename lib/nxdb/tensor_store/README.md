@@ -1,149 +1,221 @@
 # NxDB.TensorStore.FileManager
 
 ## Overview
-`NxDB.TensorStore.FileManager` is responsible for **managing persistent tensor storage** in NxDB. It enables **efficient file-based storage**, supporting **memory-mapped access, cluster-based organization, and GPU-optimized batch processing**.
 
-## Key Responsibilities
-- **Efficient File I/O for ANN Storage**
-  - Supports **memory-mapped access (`mmap`)** for fast tensor retrieval.
-  - Enables **sequential disk access for clustered tensors**.
-- **Cluster-Based Storage Organization**
-  - Uses **skip-graph hierarchical IVF** for fast lookups.
-  - Maintains **per-cluster tensor storage**.
-- **GPU-Optimized Batch Processing**
-  - Supports **batched reads/writes aligned with GPU-friendly processing**.
-  - Uses `Nx.Defn` to optimize distance calculations and retrievals.
-- **Automatic Rebalancing**
-  - **Monitors cluster sizes** and **splits/merges storage** as needed.
+`NxDB.TensorStore.FileManager` is responsible for **managing the storage and retrieval of tensors** within NxDB. It provides efficient methods to store, retrieve, and manage both **1D indexed vectors** for ANN search and **full ND tensors**, which are stored separately in binary files.
+
+### **Key Features**
+
+- **Optimized Cluster-Based Storage**
+  - Stores **1D vectors within IVF clusters** for ANN search.
+  - **HNSW graph management** at both **global (cluster) and local (vector) levels**.
 - **LRU-Based Cluster Caching**
-  - Keeps **frequently accessed clusters in memory**, reducing disk I/O.
+  - Frequently accessed clusters are kept in memory **to reduce disk I/O**.
+- **GPU-Optimized Processing**
+  - Uses `Nx.Defn` for **batch processing and ANN acceleration**.
+- **Binary File Storage for ND Tensors**
+  - ND tensors are stored **as individual binary files, retrievable by ID**.
+  - Uses **metadata indexing** for efficient lookup and filtering.
+- **1D Vector Compression & ANN Linking**
+  - Users can **optionally store compressed 1D representations** for ANN search.
+  - **User determines** optimal compression strategy.
+  - Links compressed vectors to full ND tensors using **metadata references**.
+- **Explicit Memory Management API**
+  - Uses `sync`, `sync_lock`, and `sync_unlock` for **controlled side effects**.
+  - Guarantees **pure functions operate only on in-memory data**.
 
-## API Design
+---
 
-### **1. Tensor Storage Management**
-#### `store_tensor/2`
+## **Storage Strategy**
+
+### **1️⃣ 1D Vector Storage for ANN Search**
+
+- **Users generate raw or compressed 1D vectors** and store them separately.
+- **IVF clusters organize these vectors for ANN search**.
+- **Local HNSW graphs connect vectors within a cluster**.
+- **A global HNSW graph connects clusters for faster retrieval**.
+
+### **2️⃣ Metadata Indexing**
+
+- **Stores shape, type, and tensor references, plus user specified metadata**.
+- **Used for fast lookup and filtering of ND tensors**.
+- **Links ANN search results to full ND tensors** when provided by the user.
+
+### **3️⃣ ND Tensor Storage**
+
+- **Stored separately from ANN index** in binary files.
+- **Metadata maps tensor IDs to file locations**.
+- **No built-in compression** (users must generate and store their own compressed representations).
+
+---
+
+## **API Design**
+
+### **1️⃣ Storing and Retrieving Tensors**
+
+#### `put/3`
+
 ```elixir
 @doc """
-Stores a tensor into the appropriate cluster and writes it to disk.
-- Automatically assigns it to the correct **IVF cluster**.
-- If the cluster exceeds size limits, triggers rebalancing.
+Stores a tensor.
+- Saves the tensor in the 1D cluster or as a binary file, depending on the shape.
+- Updates metadata including shape and, if provided, a raw ND tensor ID.
+- Adds tensor (for 1D tensors only) to the IVF cluster and updates HNSW graph.
+- Returns tensor_id.
+- Note that 1D compressed vector representations of ND tensors must be stored separately.
 """
-def store_tensor(tensor_id, tensor), do: ...
+def put(tensor_id, tensor, metadata), do: ...
 ```
 
-#### `load_tensor/1`
+#### `get/1`
+
 ```elixir
 @doc """
-Loads a tensor from storage using memory-mapped access if available.
-- Uses **LRU caching** to keep hot clusters in memory.
+Loads a tensor from storage.
+- Uses metadata to retrieve the raw tensor ID, if provided.
 """
-def load_tensor(tensor_id), do: ...
+def get(tensor_id), do: ...
 ```
 
-### **2. Cluster-Based Storage**
-#### `store_cluster/2`
+#### `query/1`
+
 ```elixir
 @doc """
-Stores a full IVF cluster to disk.
-- Organizes clusters to align with **disk paging & GPU batch sizes**.
+Retrieves 1D tensors based on metadata filters (e.g., shape, type).
+- Note that ND tensors linked in metadata must be loaded in a separate request by ID.
 """
-def store_cluster(cluster_id, tensors), do: ...
+def query(filters), do: ...
 ```
 
-#### `load_cluster/1`
+#### `query/3`
+
 ```elixir
 @doc """
-Loads a full cluster into memory for fast ANN search.
-- Uses **mmap for large clusters**.
-- Fetches from **LRU cache** if recently accessed.
+Finds similar tensors using ANN + metadata search.
+- Searches IVF + HNSW index.
+- Returns **only 1D tensors**. Linked ND tensors must be retrieved separately.
+- Similarity and distance for ND tensors are roadmap items.
+"""
+def query(query_vector, k, metadata), do: ...
+```
+
+---
+
+### **2️⃣ Memory Management & Caching**
+
+#### `sync/1`
+
+```elixir
+@doc """
+Ensures a cluster and its graph are in memory and in sync with disk.
+- If evicted, the cluster is loaded.
+- If dirty, the cluster is written back to disk.
+- Otherwise, no-op.
+"""
+def sync(cluster_id), do: ...
+```
+
+#### `sync_lock/1`
+
+```elixir
+@doc """
+Ensures clusters and graphs are in memory and protected from eviction.
+- Calls `sync/1` to ensure data is in memory.
+- Marks the cluster as locked, preventing eviction.
+"""
+def sync_lock([cluster_id, ...]), do: ...
+```
+
+#### `sync_unlock/1`
+
+```elixir
+@doc """
+Writes clusters and graphs back to disk (if dirty) and removes protection from eviction.
+"""
+def sync_unlock([cluster_id, ...]), do: ...
+```
+
+#### `fetch_cluster/1`
+
+```elixir
+@doc """
+Loads a cluster into memory, using LRU caching if available.
 """
 def load_cluster(cluster_id), do: ...
 ```
 
-### **3. GPU Batch Processing**
-#### `batch_store/2`
+#### `update_cluster/3`
+
 ```elixir
 @doc """
-Stores multiple tensors in a batch operation.
-- Optimized for GPU processing using `Nx.Defn`.
-- Ensures writes align with disk page size for efficiency.
+Updates the HNSW skip-graph when new vectors are inserted.
 """
-def batch_store(tensor_list, cluster_id), do: ...
+def update_cluster(graph, cluster, [tensor, ...]), do: ...
 ```
 
-#### `batch_load/1`
+#### `unload_cluster/1`
+
 ```elixir
 @doc """
-Loads multiple tensors in a batch operation.
-- Uses GPU for fast distance computations (`Nx.dot`, `Nx.norm`).
+Saves an in-memory cluster to disk.
 """
-def batch_load(tensor_ids), do: ...
+def unload_cluster(graph, cluster), do: ...
 ```
 
-### **4. Cluster Rebalancing & LRU Caching**
-#### `check_rebalance/1`
+#### `rebalance_clusters/1`
+
 ```elixir
 @doc """
-Checks if a cluster needs to be split or merged based on size constraints.
-- Uses **dynamic size calculations** based on GPU memory and disk paging.
+Rebalance (split/merge) one or more clusters if needed.
 """
-def check_rebalance(cluster_id), do: ...
+def rebalance_clusters([cluster_id, ...]), do: ...
 ```
 
-#### `fetch_from_cache/1`
+#### `update_graph/1`
+
 ```elixir
 @doc """
-Retrieves a cluster from the LRU cache if available.
-- Avoids unnecessary disk reads for frequently accessed clusters.
+Add or remove clusters from the global HNSW graph.
 """
-def fetch_from_cache(cluster_id), do: ...
+def update_graph(add: [cluster, ...], remove: [cluster, ...]) do: ...
 ```
-
-## Storage Format
-- **Tensors are stored in binary format** (`Nx.to_binary/1`).
-- **Clusters are organized as sequential blocks**.
-- **Metadata index maps tensor IDs to file offsets**.
-
-## Common Read-Write Use Cases & How This Architecture Addresses Them
-### **1. High-Speed kNN Queries (Nearest Neighbor Search)**
-**Read Pattern:** Localized sequential reads within an IVF cluster.
-**Solution:**
-- Uses **IVF for fast cluster selection**.
-- Uses **HNSW within clusters** to enable fast neighbor search.
-- **Memory-mapped files (`mmap`)** ensure efficient batch retrieval.
-
-### **2. Real-Time Vector Inserts (Feature Store, Streaming Data)**
-**Write Pattern:** Frequent small inserts, occasional batch writes.
-**Solution:**
-- **Append-only writes** keep insert speed high.
-- **Automatic rebalancing** prevents cluster overload.
-- **Batch updates** are periodically processed via GPU acceleration.
-
-### **3. Large-Scale ANN Query Processing (Batch Search for AI/ML Models)**
-**Read Pattern:** Bulk retrievals across multiple clusters.
-**Solution:**
-- **Parallel GPU-based distance computations (`Nx.Defn`)** accelerate query processing.
-- **LRU caching keeps recently queried clusters in memory**, reducing disk I/O.
-- **Multi-level IVF indexing (skip-graph structure)** speeds up search over large datasets.
-
-### **4. Anomaly Detection & Outlier Searches**
-**Read Pattern:** Sparse, full-dataset scans.
-**Solution:**
-- **HNSW efficiently narrows the search space**.
-- **Batch processing reduces redundant disk reads**.
-- **Hybrid CPU-GPU execution ensures scalability.**
-
-### **5. Time-Series Similarity Matching**
-**Read Pattern:** Sequential reads across timestamped tensors.
-**Solution:**
-- **Clusters store temporally adjacent tensors together** for efficient scans.
-- **GPU parallelized similarity calculations** improve large-scale temporal searches.
-- **LRU cache prefetches likely-to-be-accessed sequences.**
-
-## Next Steps
-✅ Implement **memory-mapped tensor retrieval**.  
-✅ Integrate **GPU batch processing** via `Nx.Defn`.  
-✅ Optimize **LRU cluster caching** for ANN acceleration.  
 
 ---
-This module ensures that **NxDB.TensorStore scales efficiently** while maintaining **fast ANN search performance**.
+
+## **Data Storage Format**
+
+### **ND Tensor Storage (Binary Files)**
+
+- **Each ND tensor is stored as a binary file (`Nx.to_binary/1`).**
+- **Metadata links tensor IDs to file offsets.**
+
+### **IVF Cluster Storage**
+
+- **1D vectors stored within IVF partitions.**
+- **HNSW graphs stored per-cluster (`graph.edges`).**
+- **Global HNSW graph links clusters.**
+
+### **Metadata Indexing (ETS or File-Based)**
+
+- **Tracks tensor shape, type, and references.**
+- **Maps 1D vectors to ND tensors (if applicable).**
+
+---
+
+## **Query Execution Flow**
+
+1️⃣ **ANN Search:**  
+
+- Query enters **global HNSW graph** → **Finds nearest clusters**.  
+- Searches **local HNSW graph within the cluster** → Returns top `k` vectors.  
+- **Returns only 1D vectors unless ND tensors are explicitly requested.**
+
+2️⃣ **ND Tensor Retrieval (If Requested):**  
+
+- Uses metadata to check if **ND tensor exists** for a result.  
+- **Loads full ND tensor from file storage.**
+
+3️⃣ **Cluster Caching & Rebalancing:**  
+
+- Frequently accessed clusters are **kept in LRU cache**.  
+- If a cluster **grows too large**, it **splits**; if too small, it **merges**.
